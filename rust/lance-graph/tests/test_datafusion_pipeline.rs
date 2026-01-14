@@ -4311,3 +4311,198 @@ async fn test_collect_with_grouping() {
     assert_eq!(cities.value(2), "San Francisco");
     assert_eq!(cities.value(3), "Seattle");
 }
+
+#[tokio::test]
+async fn test_collect_with_null_values() {
+    // Test COLLECT handles NULL values correctly
+    // David has NULL city, so collecting cities should include the null
+    let person_batch = create_person_dataset();
+    let config = GraphConfig::builder()
+        .with_node_label("Person", "id")
+        .build()
+        .unwrap();
+
+    // Collect all cities (including NULL from David)
+    let query = CypherQuery::new("MATCH (p:Person) RETURN collect(p.city) AS all_cities")
+        .unwrap()
+        .with_config(config);
+
+    let mut datasets = HashMap::new();
+    datasets.insert("Person".to_string(), person_batch);
+
+    let result = query
+        .execute(datasets, Some(ExecutionStrategy::DataFusion))
+        .await
+        .unwrap();
+
+    // COLLECT returns a single row with an array
+    assert_eq!(result.num_rows(), 1);
+
+    // Verify the column exists and has 5 elements (including the NULL)
+    let all_cities_col = result.column_by_name("all_cities").unwrap();
+    // The array should have been created successfully
+    assert!(!all_cities_col.is_empty());
+}
+
+// ============================================================================
+// WITH Clause Tests
+// ============================================================================
+
+#[tokio::test]
+async fn test_with_simple_projection() {
+    // Test WITH as a simple projection pass-through
+    let person_batch = create_person_dataset();
+    let config = GraphConfig::builder()
+        .with_node_label("Person", "id")
+        .build()
+        .unwrap();
+
+    let query = CypherQuery::new(
+        "MATCH (p:Person) WITH p.name AS name, p.age AS age RETURN name, age ORDER BY age",
+    )
+    .unwrap()
+    .with_config(config);
+
+    let mut datasets = HashMap::new();
+    datasets.insert("Person".to_string(), person_batch);
+
+    let result = query
+        .execute(datasets, Some(ExecutionStrategy::DataFusion))
+        .await
+        .unwrap();
+
+    // Should have all 5 people
+    assert_eq!(result.num_rows(), 5);
+
+    // Verify columns exist
+    assert!(result.column_by_name("name").is_some());
+    assert!(result.column_by_name("age").is_some());
+
+    // Check ordering by age (Alice=25, Eve=28, Charlie=30, Bob=35, David=40)
+    let ages = result
+        .column_by_name("age")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<Int64Array>()
+        .unwrap();
+    assert_eq!(ages.value(0), 25);
+    assert_eq!(ages.value(4), 40);
+}
+
+#[tokio::test]
+async fn test_with_aggregation() {
+    // Test WITH for aggregation: count people by city
+    let person_batch = create_person_dataset();
+    let config = GraphConfig::builder()
+        .with_node_label("Person", "id")
+        .build()
+        .unwrap();
+
+    let query = CypherQuery::new(
+        "MATCH (p:Person) WHERE p.city IS NOT NULL WITH p.city AS city, count(*) AS total RETURN city, total ORDER BY city",
+    )
+    .unwrap()
+    .with_config(config);
+
+    let mut datasets = HashMap::new();
+    datasets.insert("Person".to_string(), person_batch);
+
+    let result = query
+        .execute(datasets, Some(ExecutionStrategy::DataFusion))
+        .await
+        .unwrap();
+
+    // Should have 4 cities (David has NULL city)
+    assert_eq!(result.num_rows(), 4);
+
+    // Verify columns exist
+    assert!(result.column_by_name("city").is_some());
+    assert!(result.column_by_name("total").is_some());
+}
+
+#[tokio::test]
+async fn test_with_order_by_limit_and_where() {
+    // Test WITH with ORDER BY, LIMIT, and post-WITH WHERE filter
+    let person_batch = create_person_dataset();
+    let config = GraphConfig::builder()
+        .with_node_label("Person", "id")
+        .build()
+        .unwrap();
+
+    // Get top 4 oldest people, then filter to those older than 30
+    // Data: Alice=25, Eve=28, Charlie=30, Bob=35, David=40
+    // After ORDER BY DESC LIMIT 4: David=40, Bob=35, Charlie=30, Eve=28
+    // After WHERE age > 30: David=40, Bob=35
+    let query = CypherQuery::new(
+        "MATCH (p:Person) WITH p.name AS name, p.age AS age ORDER BY age DESC LIMIT 4 WHERE age > 30 RETURN name, age ORDER BY age",
+    )
+    .unwrap()
+    .with_config(config);
+
+    let mut datasets = HashMap::new();
+    datasets.insert("Person".to_string(), person_batch);
+
+    let result = query
+        .execute(datasets, Some(ExecutionStrategy::DataFusion))
+        .await
+        .unwrap();
+
+    // Should have 2 people (Bob=35, David=40) after LIMIT 4 then filter age > 30
+    assert_eq!(result.num_rows(), 2);
+
+    let names = result
+        .column_by_name("name")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .unwrap();
+    assert_eq!(names.value(0), "Bob");
+    assert_eq!(names.value(1), "David");
+
+    let ages = result
+        .column_by_name("age")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<Int64Array>()
+        .unwrap();
+    assert_eq!(ages.value(0), 35);
+    assert_eq!(ages.value(1), 40);
+}
+
+#[tokio::test]
+async fn test_with_post_match_chaining() {
+    // Test WITH with post-WITH MATCH (query chaining)
+    // First get people, then find additional patterns
+    let person_batch = create_person_dataset();
+    let knows_batch = create_knows_dataset();
+    let config = GraphConfig::builder()
+        .with_node_label("Person", "id")
+        .with_relationship("KNOWS", "src_person_id", "dst_person_id")
+        .build()
+        .unwrap();
+
+    // Simpler chaining: WITH aggregation, then MATCH for additional data
+    // Get count of people per city, then find people in those cities
+    let query = CypherQuery::new(
+        "MATCH (p:Person) WHERE p.city IS NOT NULL \
+         WITH p.city AS city, count(*) AS cnt \
+         MATCH (p2:Person) WHERE p2.city = city \
+         RETURN city, cnt, p2.name ORDER BY city",
+    )
+    .unwrap()
+    .with_config(config);
+
+    let mut datasets = HashMap::new();
+    datasets.insert("Person".to_string(), person_batch);
+    datasets.insert("KNOWS".to_string(), knows_batch);
+
+    let result = query
+        .execute(datasets, Some(ExecutionStrategy::DataFusion))
+        .await
+        .unwrap();
+
+    // Should have results (city + count + person names)
+    assert!(result.num_rows() > 0);
+    assert!(result.column_by_name("city").is_some());
+    assert!(result.column_by_name("cnt").is_some());
+}

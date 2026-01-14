@@ -156,11 +156,29 @@ impl LogicalPlanner {
         // Start with the MATCH clause(s)
         let mut plan = self.plan_match_clauses(&query.match_clauses)?;
 
-        // Apply WHERE clause if present
+        // Apply WHERE clause if present (before WITH)
         if let Some(where_clause) = &query.where_clause {
             plan = LogicalOperator::Filter {
                 input: Box::new(plan),
                 predicate: where_clause.expression.clone(),
+            };
+        }
+
+        // Apply WITH clause if present (intermediate projection/aggregation)
+        if let Some(with_clause) = &query.with_clause {
+            plan = self.plan_with_clause(with_clause, plan)?;
+        }
+
+        // Apply post-WITH MATCH clauses if present (query chaining)
+        for match_clause in &query.post_with_match_clauses {
+            plan = self.plan_match_clause_with_base(Some(plan), match_clause)?;
+        }
+
+        // Apply post-WITH WHERE clause if present
+        if let Some(post_where) = &query.post_with_where_clause {
+            plan = LogicalOperator::Filter {
+                input: Box::new(plan),
+                predicate: post_where.expression.clone(),
             };
         }
 
@@ -424,6 +442,53 @@ impl LogicalPlanner {
         if return_clause.distinct {
             plan = LogicalOperator::Distinct {
                 input: Box::new(plan),
+            };
+        }
+
+        Ok(plan)
+    }
+
+    /// Plan WITH clause - intermediate projection/aggregation with optional ORDER BY and LIMIT
+    fn plan_with_clause(
+        &self,
+        with_clause: &WithClause,
+        input: LogicalOperator,
+    ) -> Result<LogicalOperator> {
+        // WITH creates a projection (like RETURN)
+        let projections = with_clause
+            .items
+            .iter()
+            .map(|item| ProjectionItem {
+                expression: item.expression.clone(),
+                alias: item.alias.clone(),
+            })
+            .collect();
+
+        let mut plan = LogicalOperator::Project {
+            input: Box::new(input),
+            projections,
+        };
+
+        // Apply ORDER BY within WITH if present
+        if let Some(order_by) = &with_clause.order_by {
+            plan = LogicalOperator::Sort {
+                input: Box::new(plan),
+                sort_items: order_by
+                    .items
+                    .iter()
+                    .map(|item| SortItem {
+                        expression: item.expression.clone(),
+                        direction: item.direction.clone(),
+                    })
+                    .collect(),
+            };
+        }
+
+        // Apply LIMIT within WITH if present
+        if let Some(limit) = with_clause.limit {
+            plan = LogicalOperator::Limit {
+                input: Box::new(plan),
+                count: limit,
             };
         }
 

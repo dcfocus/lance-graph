@@ -44,6 +44,8 @@ pub enum VariableType {
 pub enum ScopeType {
     Match,
     Where,
+    With,
+    PostWithWhere,
     Return,
     OrderBy,
 }
@@ -79,7 +81,7 @@ impl SemanticAnalyzer {
             }
         }
 
-        // Phase 2: Validate WHERE clause
+        // Phase 2: Validate WHERE clause (before WITH)
         if let Some(where_clause) = &query.where_clause {
             self.current_scope = ScopeType::Where;
             if let Err(e) = self.analyze_where_clause(where_clause) {
@@ -87,13 +89,29 @@ impl SemanticAnalyzer {
             }
         }
 
-        // Phase 3: Validate RETURN clause
+        // Phase 3: Validate WITH clause if present
+        if let Some(with_clause) = &query.with_clause {
+            self.current_scope = ScopeType::With;
+            if let Err(e) = self.analyze_with_clause(with_clause) {
+                errors.push(format!("WITH clause error: {}", e));
+            }
+        }
+
+        // Phase 4: Validate post-WITH WHERE clause if present
+        if let Some(post_where) = &query.post_with_where_clause {
+            self.current_scope = ScopeType::PostWithWhere;
+            if let Err(e) = self.analyze_where_clause(post_where) {
+                errors.push(format!("Post-WITH WHERE clause error: {}", e));
+            }
+        }
+
+        // Phase 5: Validate RETURN clause
         self.current_scope = ScopeType::Return;
         if let Err(e) = self.analyze_return_clause(&query.return_clause) {
             errors.push(format!("RETURN clause error: {}", e));
         }
 
-        // Phase 4: Validate ORDER BY clause
+        // Phase 6: Validate ORDER BY clause
         if let Some(order_by) = &query.order_by {
             self.current_scope = ScopeType::OrderBy;
             if let Err(e) = self.analyze_order_by_clause(order_by) {
@@ -101,10 +119,10 @@ impl SemanticAnalyzer {
             }
         }
 
-        // Phase 5: Schema validation
+        // Phase 7: Schema validation
         self.validate_schema(&mut warnings);
 
-        // Phase 6: Type checking
+        // Phase 8: Type checking
         self.validate_types(&mut errors);
 
         Ok(SemanticResult {
@@ -416,6 +434,21 @@ impl SemanticAnalyzer {
         Ok(())
     }
 
+    /// Analyze WITH clause
+    fn analyze_with_clause(&mut self, with_clause: &WithClause) -> Result<()> {
+        // Validate WITH item expressions (similar to RETURN)
+        for item in &with_clause.items {
+            self.analyze_value_expression(&item.expression)?;
+        }
+        // Validate ORDER BY within WITH if present
+        if let Some(order_by) = &with_clause.order_by {
+            for item in &order_by.items {
+                self.analyze_value_expression(&item.expression)?;
+            }
+        }
+        Ok(())
+    }
+
     /// Analyze ORDER BY clause
     fn analyze_order_by_clause(&mut self, order_by: &OrderByClause) -> Result<()> {
         for item in &order_by.items {
@@ -558,6 +591,9 @@ mod tests {
         let query = CypherQuery {
             match_clauses: vec![],
             where_clause: None,
+            with_clause: None,
+            post_with_match_clauses: vec![],
+            post_with_where_clause: None,
             return_clause: ReturnClause {
                 distinct: false,
                 items: vec![ReturnItem {
@@ -585,6 +621,9 @@ mod tests {
                 patterns: vec![GraphPattern::Node(node)],
             }],
             where_clause: None,
+            with_clause: None,
+            post_with_match_clauses: vec![],
+            post_with_where_clause: None,
             return_clause: ReturnClause {
                 distinct: false,
                 items: vec![ReturnItem {
@@ -615,6 +654,9 @@ mod tests {
                 patterns: vec![GraphPattern::Node(node1), GraphPattern::Node(node2)],
             }],
             where_clause: None,
+            with_clause: None,
+            post_with_match_clauses: vec![],
+            post_with_where_clause: None,
             return_clause: ReturnClause {
                 distinct: false,
                 items: vec![],
@@ -661,6 +703,9 @@ mod tests {
                 patterns: vec![GraphPattern::Path(path)],
             }],
             where_clause: None,
+            with_clause: None,
+            post_with_match_clauses: vec![],
+            post_with_where_clause: None,
             return_clause: ReturnClause {
                 distinct: false,
                 items: vec![],
@@ -690,6 +735,9 @@ mod tests {
                 patterns: vec![GraphPattern::Node(node)],
             }],
             where_clause: Some(where_clause),
+            with_clause: None,
+            post_with_match_clauses: vec![],
+            post_with_where_clause: None,
             return_clause: ReturnClause {
                 distinct: false,
                 items: vec![],
@@ -729,6 +777,9 @@ mod tests {
                 patterns: vec![GraphPattern::Path(path)],
             }],
             where_clause: None,
+            with_clause: None,
+            post_with_match_clauses: vec![],
+            post_with_where_clause: None,
             return_clause: ReturnClause {
                 distinct: false,
                 items: vec![],
@@ -755,6 +806,9 @@ mod tests {
                 patterns: vec![GraphPattern::Node(node)],
             }],
             where_clause: None,
+            with_clause: None,
+            post_with_match_clauses: vec![],
+            post_with_where_clause: None,
             return_clause: ReturnClause {
                 distinct: false,
                 items: vec![],
@@ -792,6 +846,9 @@ mod tests {
                 patterns: vec![GraphPattern::Node(node)],
             }],
             where_clause: None,
+            with_clause: None,
+            post_with_match_clauses: vec![],
+            post_with_where_clause: None,
             return_clause: ReturnClause {
                 distinct: false,
                 items: vec![],
@@ -834,6 +891,9 @@ mod tests {
                 patterns: vec![GraphPattern::Path(path)],
             }],
             where_clause: None,
+            with_clause: None,
+            post_with_match_clauses: vec![],
+            post_with_where_clause: None,
             return_clause: ReturnClause {
                 distinct: false,
                 items: vec![],
@@ -898,6 +958,9 @@ mod tests {
                 patterns: vec![GraphPattern::Path(path)],
             }],
             where_clause: None,
+            with_clause: None,
+            post_with_match_clauses: vec![],
+            post_with_where_clause: None,
             return_clause: ReturnClause {
                 distinct: false,
                 items: vec![],

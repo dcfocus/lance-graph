@@ -15,8 +15,14 @@ use std::collections::HashMap;
 pub struct CypherQuery {
     /// MATCH clauses
     pub match_clauses: Vec<MatchClause>,
-    /// WHERE clause (optional)
+    /// WHERE clause (optional, before WITH if present)
     pub where_clause: Option<WhereClause>,
+    /// WITH clause (optional) - intermediate projection/aggregation
+    pub with_clause: Option<WithClause>,
+    /// MATCH clauses after WITH (optional) - query chaining
+    pub post_with_match_clauses: Vec<MatchClause>,
+    /// WHERE clause after WITH (optional) - filters the WITH results
+    pub post_with_where_clause: Option<WhereClause>,
     /// RETURN clause
     pub return_clause: ReturnClause,
     /// LIMIT clause (optional)
@@ -321,6 +327,20 @@ pub enum ArithmeticOperator {
     Multiply,
     Divide,
     Modulo,
+}
+
+/// WITH clause for intermediate projections/aggregations
+///
+/// WITH acts as a query stage boundary, projecting results that become
+/// the input for subsequent clauses.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WithClause {
+    /// Items to project (similar to RETURN)
+    pub items: Vec<ReturnItem>,
+    /// Optional ORDER BY within WITH
+    pub order_by: Option<OrderByClause>,
+    /// Optional LIMIT within WITH
+    pub limit: Option<u64>,
 }
 
 /// RETURN clause specifying what to return

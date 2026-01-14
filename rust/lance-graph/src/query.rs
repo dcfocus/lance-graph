@@ -1178,6 +1178,9 @@ impl CypherQueryBuilder {
             where_clause: self
                 .where_expression
                 .map(|expr| crate::ast::WhereClause { expression: expr }),
+            with_clause: None, // WITH not supported via builder yet
+            post_with_match_clauses: vec![],
+            post_with_where_clause: None,
             return_clause: crate::ast::ReturnClause {
                 distinct: self.distinct,
                 items: self.return_items,

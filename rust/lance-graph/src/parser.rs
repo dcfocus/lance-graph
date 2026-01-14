@@ -42,7 +42,20 @@ pub fn parse_cypher_query(input: &str) -> Result<CypherQuery> {
 fn cypher_query(input: &str) -> IResult<&str, CypherQuery> {
     let (input, _) = multispace0(input)?;
     let (input, match_clauses) = many0(match_clause)(input)?;
-    let (input, where_clause) = opt(where_clause)(input)?;
+    let (input, pre_with_where) = opt(where_clause)(input)?;
+
+    // Optional WITH clause with optional post-WITH MATCH and WHERE
+    let (input, with_result) = opt(with_clause)(input)?;
+    // Only try to parse post-WITH clauses if we have a WITH clause
+    let (input, post_with_matches, post_with_where) = match with_result {
+        Some(_) => {
+            let (input, matches) = many0(match_clause)(input)?;
+            let (input, where_cl) = opt(where_clause)(input)?;
+            (input, matches, where_cl)
+        }
+        None => (input, vec![], None),
+    };
+
     let (input, return_clause) = return_clause(input)?;
     let (input, order_by) = opt(order_by_clause)(input)?;
     let (input, (skip, limit)) = pagination_clauses(input)?;
@@ -52,7 +65,10 @@ fn cypher_query(input: &str) -> IResult<&str, CypherQuery> {
         input,
         CypherQuery {
             match_clauses,
-            where_clause,
+            where_clause: pre_with_where,
+            with_clause: with_result,
+            post_with_match_clauses: post_with_matches,
+            post_with_where_clause: post_with_where,
             return_clause,
             limit,
             order_by,
@@ -653,6 +669,25 @@ fn property_reference(input: &str) -> IResult<&str, PropertyRef> {
         PropertyRef {
             variable: variable.to_string(),
             property: property.to_string(),
+        },
+    ))
+}
+
+// Parse a WITH clause (intermediate projection/aggregation)
+fn with_clause(input: &str) -> IResult<&str, WithClause> {
+    let (input, _) = multispace0(input)?;
+    let (input, _) = tag_no_case("WITH")(input)?;
+    let (input, _) = multispace1(input)?;
+    let (input, items) = separated_list0(comma_ws, return_item)(input)?;
+    let (input, order_by) = opt(order_by_clause)(input)?;
+    let (input, limit) = opt(limit_clause)(input)?;
+
+    Ok((
+        input,
+        WithClause {
+            items,
+            order_by,
+            limit,
         },
     ))
 }
